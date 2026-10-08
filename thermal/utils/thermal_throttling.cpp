@@ -919,11 +919,24 @@ bool ThermalThrottling::getCdevMaxRequest(std::string_view cdev_name, int *max_s
     return true;
 }
 
+bool ThermalThrottling::hasCdevRequest(std::string_view cdev_name) {
+    std::shared_lock<std::shared_mutex> _lock(cdev_all_request_map_mutex_);
+    return cdev_all_request_map_.count(cdev_name.data()) > 0;
+}
+
 void ThermalThrottling::logCoolingDeviceStatus(
         const std::unordered_map<std::string, CdevInfo> &cooling_device_info_map) {
     int max_state = 0;
     std::ostringstream cdev_log;
+    std::ostringstream unmanaged_log;
     for (const auto &[cdev_name, cdev_info] : cooling_device_info_map) {
+        if (!hasCdevRequest(cdev_name)) {
+            // No BindedCdevInfo in the config binds this cdev to any sensor, so
+            // the HAL has no vote for it (kernel governor owns it). List it in
+            // the periodic status line instead of erroring every cycle.
+            unmanaged_log << cdev_name << " ";
+            continue;
+        }
         if (getCdevMaxRequest(cdev_name, &max_state)) {
             ATRACE_INT((cdev_name + std::string("-state")).c_str(), max_state);
             if (!cdev_info.apply_powercap) {
@@ -935,6 +948,9 @@ void ThermalThrottling::logCoolingDeviceStatus(
                 ATRACE_INT((cdev_name + std::string("-budget")).c_str(), budget);
             }
         }
+    }
+    if (!unmanaged_log.str().empty()) {
+        cdev_log << "[unmanaged, no HAL vote: " << unmanaged_log.str() << "] ";
     }
     LOG(INFO) << "CDEV log " << cdev_log.str();
 }
